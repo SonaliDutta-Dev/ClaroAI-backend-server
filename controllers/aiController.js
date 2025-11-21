@@ -219,9 +219,17 @@ export const removeObject = async (req, res) => {
 
 // ---------- REVIEW RESUME ----------
 
+
 export const reviewResume = async (req, res) => {
   try {
     const { userId } = req.auth();
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized"
+      });
+    }
 
     if (!req.file) {
       return res.status(400).json({
@@ -231,37 +239,65 @@ export const reviewResume = async (req, res) => {
     }
 
     const pdfPath = req.file.path;
-
     const pdfParser = new PDFParser();
 
     pdfParser.loadPDF(pdfPath);
 
-    pdfParser.on("pdfParser_dataError", errData => {
-      console.error(errData.parserError);
+    pdfParser.on("pdfParser_dataError", (errData) => {
+      console.error("PDF ERROR:", errData.parserError);
       return res.status(400).json({
         success: false,
         message: "Invalid PDF file"
       });
     });
 
-    pdfParser.on("pdfParser_dataReady", async pdfData => {
-      const extractedText = pdfParser.getRawTextContent();
+    pdfParser.on("pdfParser_dataReady", async () => {
+      // 1. Primary Extraction
+      let extractedText = pdfParser.getRawTextContent()?.trim() || "";
 
+      // 2. Fallback Extraction (same as your working PDF Summarizer)
+      if (!extractedText || extractedText.length < 10) {
+        try {
+          extractedText = pdfParser.data.Pages
+            .map(page =>
+              page.Texts.map(t =>
+                decodeURIComponent(t.R.map(r => r.T).join(" "))
+              ).join(" ")
+            )
+            .join("\n\n");
+        } catch (err) {
+          console.log("Fallback extraction failed:", err.message);
+        }
+      }
+
+      // 3. If STILL empty, error out
+      if (!extractedText || extractedText.length < 5) {
+        return res.status(400).json({
+          success: false,
+          message: "Could not read resume text. Try another PDF."
+        });
+      }
+
+      // 4. Prepare Gemini prompt
       const prompt = `
-        Review this resume and provide strengths, weaknesses,
-        improvements, and formatting issues:
+You are a professional HR resume reviewer. Analyze this resume text and give:
 
-        ${extractedText}
+• Strengths  
+• Weaknesses  
+• Missing information  
+• Formatting issues  
+• Suggestions for improvement  
+• Overall rating (out of 10)
+
+Resume Text:
+${extractedText}
       `;
 
+      // 5. Gemini API Request
       const response = await axios.post(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
         {
-          contents: [
-            {
-              parts: [{ text: prompt }]
-            }
-          ]
+          contents: [{ parts: [{ text: prompt }] }]
         },
         {
           headers: {
@@ -275,9 +311,11 @@ export const reviewResume = async (req, res) => {
         response.data?.candidates?.[0]?.content?.parts?.[0]?.text ||
         "No response";
 
-      fs.unlinkSync(pdfPath);
+      // 6. Delete uploaded PDF
+      fs.unlink(pdfPath, () => {});
 
-      res.json({
+      // 7. Send response
+      return res.json({
         success: true,
         content
       });
@@ -285,7 +323,8 @@ export const reviewResume = async (req, res) => {
 
   } catch (error) {
     console.error("RESUME REVIEW ERROR:", error.response?.data || error.message);
-    res.status(500).json({
+
+    return res.status(500).json({
       success: false,
       message: "Error reviewing resume"
     });

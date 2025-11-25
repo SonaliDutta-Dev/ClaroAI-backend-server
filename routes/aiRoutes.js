@@ -1,49 +1,97 @@
 import express from "express";
-import { 
-  generateArticle, 
-  generateBlogTitle, 
-  generateImage,  
-  removeBackground, 
-  removeObject, 
-  reviewResume, 
-  pdfSummarizer ,pdfChat,generateQr, extractTextFromImage ,compressResizeImage ,youtubeSummarizer , youtubeChat, generateExamQuestions , imageCaption,
-} from "../controllers/aiController.js";
 import { requireAuth } from "@clerk/express";
+import { auth } from "../middlewares/auth.js";
 import { upload } from "../configs/multer.js";
 
+import {
+  generateArticle,
+  generateBlogTitle,
+  generateImage,
+  removeBackground,
+  removeObject,
+  reviewResume,
+  pdfSummarizer,
+  pdfChat,
+  generateQr,
+  extractTextFromImage,
+  compressResizeImage,
+  youtubeSummarizer,
+  youtubeChat,
+  generateExamQuestions,
+  imageCaption,
+  interviewSimulator,
+  generatePresentation,
+    generateResume,
+} from "../controllers/aiController.js";
+
 const aiRouter = express.Router();
-// const upload = multer({ dest: "uploads/" });
-aiRouter.post("/generate-article", requireAuth(), generateArticle);
-aiRouter.post("/generate-blog-title", requireAuth(), generateBlogTitle);
-aiRouter.post("/generate-image", requireAuth(), generateImage);
-aiRouter.post("/remove-background", upload.single('image'), requireAuth(), removeBackground);
-aiRouter.post("/remove-object", upload.single('image'), requireAuth(), removeObject);
 
-aiRouter.post("/resume-review", upload.single("resume"), requireAuth(), reviewResume);
+// ALWAYS USE THIS ORDER 👇
+// requireAuth() → your custom auth → controller
 
-// ✅ Fixed: use requireAuth() instead of undefined `auth`
-aiRouter.post(
-  "/summarize-pdf",
+aiRouter.post("/generate-article", requireAuth(), auth, generateArticle);
+aiRouter.post("/generate-blog-title", requireAuth(), auth, generateBlogTitle);
+aiRouter.post("/generate-image", requireAuth(), auth, generateImage);
+
+aiRouter.post("/remove-background",
+  upload.single("image"),
   requireAuth(),
-  upload.single("pdf"),   // must match input name in React
+  auth,
+  removeBackground
+);
+
+aiRouter.post("/remove-object",
+  upload.single("image"),
+  requireAuth(),
+  auth,
+  removeObject
+);
+
+aiRouter.post("/resume-review",
+  upload.single("resume"),
+  requireAuth(),
+  auth,
+  reviewResume
+);
+
+aiRouter.post("/summarize-pdf",
+  upload.single("pdf"),
+  requireAuth(),
+  auth,
   pdfSummarizer
 );
-aiRouter.post("/pdf-chat", requireAuth(), pdfChat);
 
-aiRouter.post("/qr-generate", requireAuth(), generateQr);
+aiRouter.post("/pdf-chat", requireAuth(), auth, pdfChat);
 
-aiRouter.post("/extract-text", upload.single("image"), requireAuth(), extractTextFromImage);
+aiRouter.post("/qr-generate", requireAuth(), auth, generateQr);
 
-aiRouter.post(
-    "/compress-resize-image",
-    upload.single("image"),
-    requireAuth(),
-    compressResizeImage
+aiRouter.post("/extract-text",
+  upload.single("image"),
+  requireAuth(),
+  auth,
+  extractTextFromImage
 );
-aiRouter.post("/youtube-summary", requireAuth(), youtubeSummarizer);
-aiRouter.post("/youtube-chat", requireAuth(), youtubeChat);
-aiRouter.post("/exam-generator",requireAuth(), generateExamQuestions)
-// at top: make sure `generateImageCaptions` is exported/imported from controller
-aiRouter.post("/image-caption", upload.single("image"), requireAuth(), imageCaption);
 
+aiRouter.post("/compress-resize-image",
+  upload.single("image"),
+  requireAuth(),
+  auth,
+  compressResizeImage
+);
+
+aiRouter.post("/youtube-summary", requireAuth(), auth, youtubeSummarizer);
+
+aiRouter.post("/youtube-chat", requireAuth(), auth, youtubeChat);
+
+aiRouter.post("/exam-generator", requireAuth(), auth, generateExamQuestions);
+
+aiRouter.post("/image-caption",
+  upload.single("image"),
+  requireAuth(),
+  auth,
+  imageCaption
+);
+aiRouter.post("/interview", requireAuth(), auth, interviewSimulator);
+aiRouter.post("/ppt-generate", requireAuth(), auth, generatePresentation);
+aiRouter.post("/generate-resume", requireAuth(), auth, generateResume);
 export default aiRouter;

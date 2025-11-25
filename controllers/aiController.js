@@ -105,10 +105,22 @@ export const generateBlogTitle = async (req, res) => {
 // ---------- IMAGE GENERATION ----------
 export const generateImage = async (req, res) => {
   try {
-    const { prompt } = req.body;
     const { userId } = req.auth();
+    const { prompt } = req.body;
 
-    if (!prompt?.trim()) return res.json({ success: false, message: "Prompt is required" });
+    const plan = req.plan;
+
+    if (!prompt) {
+      return res.json({ success: false, message: "Prompt is required" });
+    }
+
+    // premium-only
+    if (plan !== "premium") {
+      return res.json({
+        success: false,
+        message: "This feature is only available for premium subscriptions",
+      });
+    }
 
     const form = new FormData();
     form.append("prompt", prompt);
@@ -119,7 +131,7 @@ export const generateImage = async (req, res) => {
       {
         headers: {
           ...form.getHeaders(),
-          "x-api-key": process.env.CLIPDROP_API_KEY.trim(),
+          "x-api-key": process.env.CLIPDROP_API_KEY,
         },
         responseType: "arraybuffer",
       }
@@ -128,7 +140,10 @@ export const generateImage = async (req, res) => {
     const tempFile = "temp.png";
     fs.writeFileSync(tempFile, response.data);
 
-    const upload = await cloudinary.uploader.upload(tempFile, { folder: "ClaroAI" });
+    const upload = await cloudinary.uploader.upload(tempFile, {
+      folder: "ClaroAI",
+    });
+
     fs.unlinkSync(tempFile);
 
     await sql`
@@ -136,19 +151,32 @@ export const generateImage = async (req, res) => {
       VALUES (${userId}, ${prompt}, ${upload.secure_url}, 'image')
     `;
 
-    res.json({ success: true, content: upload.secure_url });
+    return res.json({ success: true, content: upload.secure_url });
 
-  } catch (error) {
-    console.error("Image generation error:", error.response?.data || error.message);
-    res.status(500).json({ success: false, message: "Failed to generate image" });
+  } catch (err) {
+    console.error(err);
+    return res.json({ success: false, message: err.message });
   }
 };
 
+
+// ---------- REMOVE BACKGROUND ----------
 // ---------- REMOVE BACKGROUND ----------
 export const removeBackground = async (req, res) => {
   try {
     const { userId } = req.auth();
     const file = req.file;
+
+    const plan = req.plan; // ⭐ added
+
+    // ⭐ PREMIUM CHECK
+    if (plan !== "premium") {
+      return res.json({
+        success: false,
+        message: "This feature is only available for premium subscriptions",
+      });
+    }
+
     if (!file) return res.status(400).json({ success: false, message: "Image file required" });
 
     // ensure file is read correctly as binary
@@ -186,21 +214,38 @@ export const removeBackground = async (req, res) => {
   }
 };
 
+
 // ---------- REMOVE OBJECT ----------
 export const removeObject = async (req, res) => {
   try {
     const { userId } = req.auth();
     const object = req.body.object;
     const image = req.file;
-    if (!image) return res.status(400).json({ success: false, message: "Image required" });
-    if (!object) return res.status(400).json({ success: false, message: "Object required" });
 
-    const uploaded = await cloudinary.uploader.upload(image.path, { resource_type: "image" });
+    const plan = req.plan; // ⭐ added
+
+    // ⭐ PREMIUM CHECK
+    if (plan !== "premium") {
+      return res.json({
+        success: false,
+        message: "This feature is only available for premium subscriptions",
+      });
+    }
+
+    if (!image)
+      return res.status(400).json({ success: false, message: "Image required" });
+
+    if (!object)
+      return res.status(400).json({ success: false, message: "Object required" });
+
+    const uploaded = await cloudinary.uploader.upload(image.path, {
+      resource_type: "image",
+    });
 
     const imageUrl = cloudinary.url(uploaded.public_id, {
       secure: true,
-      resource_type: "image",       // <-- force image type
-      transformation: [{ effect: `gen_remove:${object}` }]
+      resource_type: "image",
+      transformation: [{ effect: `gen_remove:${object}` }],
     });
 
     await sql`
@@ -212,9 +257,13 @@ export const removeObject = async (req, res) => {
 
   } catch (error) {
     console.error("REMOVE OBJECT ERROR:", error.message);
-    res.status(500).json({ success: false, message: "Failed to remove object" });
+    res.status(500).json({
+      success: false,
+      message: "Failed to remove object",
+    });
   }
 };
+
 
 
 // ---------- REVIEW RESUME ----------
@@ -223,6 +272,16 @@ export const removeObject = async (req, res) => {
 export const reviewResume = async (req, res) => {
   try {
     const { userId } = req.auth();
+
+    const plan = req.plan; // ⭐ added
+
+    // ⭐ PREMIUM CHECK
+    if (plan !== "premium") {
+      return res.json({
+        success: false,
+        message: "This feature is only available for premium subscriptions",
+      });
+    }
 
     if (!userId) {
       return res.status(401).json({
@@ -255,7 +314,7 @@ export const reviewResume = async (req, res) => {
       // 1. Primary Extraction
       let extractedText = pdfParser.getRawTextContent()?.trim() || "";
 
-      // 2. Fallback Extraction (same as your working PDF Summarizer)
+      // 2. Fallback Extraction
       if (!extractedText || extractedText.length < 10) {
         try {
           extractedText = pdfParser.data.Pages
@@ -270,7 +329,7 @@ export const reviewResume = async (req, res) => {
         }
       }
 
-      // 3. If STILL empty, error out
+      // 3. If STILL empty
       if (!extractedText || extractedText.length < 5) {
         return res.status(400).json({
           success: false,
@@ -293,12 +352,10 @@ Resume Text:
 ${extractedText}
       `;
 
-      // 5. Gemini API Request
+      // 5. Gemini request
       const response = await axios.post(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
-        {
-          contents: [{ parts: [{ text: prompt }] }]
-        },
+        { contents: [{ parts: [{ text: prompt }] }] },
         {
           headers: {
             "Content-Type": "application/json",
@@ -311,10 +368,10 @@ ${extractedText}
         response.data?.candidates?.[0]?.content?.parts?.[0]?.text ||
         "No response";
 
-      // 6. Delete uploaded PDF
+      // 6. Delete PDF
       fs.unlink(pdfPath, () => {});
 
-      // 7. Send response
+      // 7. Return result
       return res.json({
         success: true,
         content
@@ -337,6 +394,7 @@ ${extractedText}
 
 
 
+
 // store pdf text for each user
 let pdfContext = {};
 
@@ -345,6 +403,16 @@ export const pdfSummarizer = async (req, res) => {
     console.log("===== PDF SUMMARIZER HIT =====");
 
     const { userId } = req.auth();
+    const plan = req.plan; // ⭐ added
+
+    // ⭐ PREMIUM CHECK
+    if (plan !== "premium") {
+      return res.json({
+        success: false,
+        message: "This feature is only available for premium subscriptions",
+      });
+    }
+
     if (!userId)
       return res.status(401).json({ success: false, message: "Unauthorized" });
 
@@ -360,7 +428,7 @@ export const pdfSummarizer = async (req, res) => {
       console.error("PDF ERROR:", err.parserError);
       return res.status(400).json({
         success: false,
-        message: "Invalid PDF file"
+        message: "Invalid PDF file",
       });
     });
 
@@ -381,11 +449,11 @@ export const pdfSummarizer = async (req, res) => {
       if (!extractedText || extractedText.length < 5) {
         return res.status(400).json({
           success: false,
-          message: "Could not read PDF text. Try another file."
+          message: "Could not read PDF text. Try another file.",
         });
       }
 
-      // 🔥 STORE PDF TEXT FOR CHAT FEATURE
+      // store for chat
       pdfContext[userId] = extractedText;
       console.log("PDF CONTEXT SAVED FOR USER:", userId);
 
@@ -398,13 +466,13 @@ ${extractedText}
       const response = await axios.post(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
         {
-          contents: [{ parts: [{ text: prompt }] }]
+          contents: [{ parts: [{ text: prompt }] }],
         },
         {
           headers: {
             "Content-Type": "application/json",
-            "x-goog-api-key": process.env.GEMINI_API_KEY
-          }
+            "x-goog-api-key": process.env.GEMINI_API_KEY,
+          },
         }
       );
 
@@ -430,21 +498,24 @@ export const pdfChat = async (req, res) => {
   try {
     const { userId } = req.auth();
     const { question } = req.body;
-
-    // premium validation disabled for now
-    const plan = "premium";
+    const plan = req.plan; // ⭐ added
 
     if (!userId)
       return res.status(401).json({ success: false, message: "Unauthorized" });
 
-    if (plan !== "premium")
+    // ⭐ PREMIUM CHECK
+    if (plan !== "premium") {
       return res.json({
         success: false,
         message: "This feature is only available for premium subscriptions",
       });
+    }
 
     if (!question?.trim())
-      return res.json({ success: false, message: "Please ask a question" });
+      return res.json({
+        success: false,
+        message: "Please ask a question",
+      });
 
     if (!pdfContext[userId]) {
       return res.json({
@@ -486,9 +557,37 @@ QUESTION: ${question}
 //QR generator
 export const generateQr = async (req, res) => {
   try {
-    const { text, size = 512, margin = 2, errorCorrectionLevel = "M", format = "png", darkColor = "#000", lightColor = "#fff" } = req.body;
+    const { userId } = req.auth();
+    const plan = req.plan; // ⭐ added
 
-    if (!text?.trim()) return res.json({ success: false, message: "Text required" });
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+      });
+    }
+
+    // ⭐ PREMIUM CHECK
+    if (plan !== "premium") {
+      return res.json({
+        success: false,
+        message: "This feature is only available for premium subscriptions",
+      });
+    }
+
+    const { 
+      text, 
+      size = 512, 
+      margin = 2, 
+      errorCorrectionLevel = "M", 
+      format = "png", 
+      darkColor = "#000", 
+      lightColor = "#fff" 
+    } = req.body;
+
+    if (!text?.trim()) {
+      return res.json({ success: false, message: "Text required" });
+    }
 
     const options = {
       errorCorrectionLevel: ["L","M","Q","H"].includes(errorCorrectionLevel) ? errorCorrectionLevel : "M",
@@ -505,6 +604,7 @@ export const generateQr = async (req, res) => {
       const svg = await QRCode.toString(text, { ...options, type: "svg" });
       return res.json({ success: true, format: "svg", svg });
     }
+
   } catch (err) {
     console.error("QR generation error:", err);
     return res.json({ success: false, message: err.message });
@@ -515,21 +615,34 @@ export const generateQr = async (req, res) => {
 export const extractTextFromImage = async (req, res) => {
   try {
     const { userId } = req.auth();
+    const plan = req.plan; // ⭐ added
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+      });
+    }
+
+    // ⭐ PREMIUM CHECK
+    if (plan !== "premium") {
+      return res.json({
+        success: false,
+        message: "This feature is only available for premium subscriptions",
+      });
+    }
+
     const image = req.file;
 
     if (!image) {
       return res.json({ success: false, message: "No image uploaded" });
     }
 
-    // Make sure you have English traineddata in your project
-    const tessdataPath = "./tessdata"; // put eng.traineddata here
+    const tessdataPath = "./tessdata";
 
-    // Run OCR
     const worker = Tesseract.createWorker({
       langPath: tessdataPath,
-      logger: (m) => {
-        // optional: console.log(m)
-      },
+      logger: () => {},
     });
 
     await worker.load();
@@ -540,16 +653,15 @@ export const extractTextFromImage = async (req, res) => {
 
     await worker.terminate();
 
-    // save text to DB
     await sql`
       INSERT INTO creations (user_id, prompt, content, type)
       VALUES (${userId}, 'Extracted text from image', ${data.text}, 'text')
     `;
 
-    // delete uploaded image to free space
     fs.unlinkSync(image.path);
 
     res.json({ success: true, content: data.text });
+
   } catch (error) {
     console.error("OCR Error:", error);
     res.json({ success: false, message: error.message });
@@ -559,13 +671,29 @@ export const extractTextFromImage = async (req, res) => {
 export const compressResizeImage = async (req, res) => {
   try {
     const { userId } = req.auth();
+    const plan = req.plan; // ⭐ added
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+      });
+    }
+
+    // ⭐ PREMIUM CHECK
+    if (plan !== "premium") {
+      return res.json({
+        success: false,
+        message: "This feature is only available for premium subscriptions",
+      });
+    }
+
     const { width, height, quality, format } = req.body;
     const image = req.file;
 
     if (!image) {
       return res.json({ success: false, message: "No image uploaded" });
     }
-
 
     let transformer = sharp(image.path);
     transformer = transformer.rotate();
@@ -587,7 +715,7 @@ export const compressResizeImage = async (req, res) => {
       processedBuffer = await transformer
         .jpeg({ quality: parseInt(quality) || 80, mozjpeg: true })
         .toBuffer();
-      outputFormat = "jpg"; // cloudinary prefers "jpg"
+      outputFormat = "jpg";
     } else if (outputFormat === "png") {
       processedBuffer = await transformer
         .png({ compressionLevel: 9, adaptiveFiltering: true })
@@ -600,7 +728,7 @@ export const compressResizeImage = async (req, res) => {
       processedBuffer = await transformer.toBuffer();
     }
 
-    //  Upload buffer directly to Cloudinary
+    // Upload buffer directly to Cloudinary
     const uploaded = await new Promise((resolve, reject) => {
       const stream = cloudinary.uploader.upload_stream(
         { resource_type: "image", format: outputFormat },
@@ -612,7 +740,7 @@ export const compressResizeImage = async (req, res) => {
       stream.end(processedBuffer);
     });
 
-    //  Save in DB
+    // Save in DB
     await sql`
       INSERT INTO creations (user_id, prompt, content, type)
       VALUES (${userId}, ${"Compressed/Resized image"}, ${uploaded.secure_url}, 'image')
@@ -624,6 +752,7 @@ export const compressResizeImage = async (req, res) => {
     res.json({ success: false, message: error.message });
   }
 };
+
 
 
 const YT_API = "https://www.googleapis.com/youtube/v3";
@@ -823,43 +952,64 @@ export const youtubeSummarizer = async (req, res) => {
   try {
     const auth = getAuth(req);
     const userId = auth.userId;
-    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    if (!userId)
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    const plan = req.plan ?? auth.plan; // ⭐ added
+
+    // ⭐ PREMIUM CHECK
+    if (plan !== "premium") {
+      return res.json({
+        success: false,
+        message: "This feature is only available for premium subscriptions",
+      });
+    }
 
     // accept either "url" or "link" or "videoId"
     const { url, link, videoId: vidFromBody, detail = "medium" } = req.body;
     const raw = url || link || vidFromBody;
     if (!raw) return res.json({ success: false, message: "Missing URL/videoId" });
 
-    // allow plan-check if you set it; if undefined assume allowed
-    const plan = req.plan ?? auth.plan ?? "premium";
-    if (req.plan !== undefined && plan !== "premium") {
-      return res.json({ success: false, message: "Premium only" });
-    }
-
     const vId = extractVideoId(raw);
     console.log("YT summarizer: videoId =", vId);
 
-    // 1) fetch metadata (reliable)
-    const { meta, comments, source } = await fetchVideoMetadata(vId).then((r) => ({ meta: r.meta || r, comments: r.comments || [], source: "youtube-data-api" })).catch(async (err) => {
-      console.error("YT metadata fetch failed:", err.message || err);
-      // fallback: try minimal context with the video page HTML (best-effort)
-      try {
-        const htmlResp = await axios.get(`https://www.youtube.com/watch?v=${vId}`, { timeout: 10000 });
-        return { meta: { snippet: { title: `YouTube page ${vId}`, description: htmlResp.data.slice(0, 2000) } }, comments: [], source: "youtube-page" };
-      } catch (e) {
-        throw new Error("Failed to fetch video metadata");
-      }
-    });
+    const { meta, comments, source } =
+      await fetchVideoMetadata(vId)
+        .then((r) => ({
+          meta: r.meta || r,
+          comments: r.comments || [],
+          source: "youtube-data-api",
+        }))
+        .catch(async (err) => {
+          console.error("YT metadata fetch failed:", err.message || err);
+          try {
+            const htmlResp = await axios.get(
+              `https://www.youtube.com/watch?v=${vId}`,
+              { timeout: 10000 }
+            );
+            return {
+              meta: {
+                snippet: {
+                  title: `YouTube page ${vId}`,
+                  description: htmlResp.data.slice(0, 2000),
+                },
+              },
+              comments: [],
+              source: "youtube-page",
+            };
+          } catch (e) {
+            throw new Error("Failed to fetch video metadata");
+          }
+        });
 
-    // build text context
     const text = buildYouTubeContextFromMeta(meta, comments);
-    // store for chat
+
     ytContext[userId] = text;
 
-    // summarize (map-reduce)
     const content = await summarizeTranscriptLong(text, detail);
 
-    // save creation (best-effort; if DB or sql not set, don't crash)
+    // Save to DB (try but do not break)
     try {
       await sql`
         INSERT INTO creations (user_id, prompt, content, type)
@@ -872,25 +1022,49 @@ export const youtubeSummarizer = async (req, res) => {
     res.json({ success: true, content, used: source });
   } catch (err) {
     console.error("YT Summary Error:", err.message || err);
-    res.status(500).json({ success: false, message: err.message || "Failed to summarize video" });
+    res.status(500).json({
+      success: false,
+      message: err.message || "Failed to summarize video",
+    });
   }
 };
+
 
 // POST /api/ai/youtube-chat
 export const youtubeChat = async (req, res) => {
   try {
     const auth = getAuth(req);
     const userId = auth.userId;
-    if (!userId) return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    if (!userId)
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    const plan = req.plan ?? auth.plan; // ⭐ added
+
+    // ⭐ PREMIUM CHECK
+    if (plan !== "premium") {
+      return res.json({
+        success: false,
+        message: "This feature is only available for premium subscriptions",
+      });
+    }
 
     const { question, message } = req.body;
     const q = (question || message || "").trim();
-    if (!q) return res.json({ success: false, message: "Please provide a question" });
+
+    if (!q)
+      return res.json({ success: false, message: "Please provide a question" });
 
     const transcript = ytContext[userId];
-    if (!transcript) return res.json({ success: false, message: "Please summarize a video first." });
+    if (!transcript) {
+      return res.json({
+        success: false,
+        message: "Please summarize a video first.",
+      });
+    }
 
-    const prompt = `You are a helpful assistant that answers strictly from the given YouTube metadata (title, description, tags, stats, and top comments).
+    const prompt = `
+You are a helpful assistant that answers strictly from the given YouTube metadata (title, description, tags, stats, and top comments).
 If an answer is not found in metadata, say so.
 
 Metadata:
@@ -916,17 +1090,30 @@ Answer clearly and concisely.`;
     res.json({ success: true, answer });
   } catch (err) {
     console.error("YT Chat Error:", err.message || err);
-    res.status(500).json({ success: false, message: err.message || "Chat failed" });
+    res.status(500).json({
+      success: false,
+      message: err.message || "Chat failed",
+    });
   }
 };
+
 
 
 // ---------- EXAM QUESTION GENERATOR ----------
 export const generateExamQuestions = async (req, res) => {
   try {
-    const userId = req.auth?.userId;
+    const { userId } = req.auth();
     if (!userId)
       return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    // ⭐ PREMIUM CHECK
+    const plan = req.plan;
+    if (plan !== "premium") {
+      return res.json({
+        success: false,
+        message: "This feature is only available for premium subscriptions",
+      });
+    }
 
     const { topic, longCount, sortCount, mcqCount, difficulty } = req.body;
 
@@ -998,7 +1185,6 @@ Return ONLY JSON in this format:
       });
     }
 
-    // 🔥 FIX FOR LQ & SQ (Convert object → string)
     const lq =
       typeof parsed.LQ_version === "object"
         ? Object.values(parsed.LQ_version).join("\n\n")
@@ -1009,7 +1195,6 @@ Return ONLY JSON in this format:
         ? Object.values(parsed.SQ_version).join("\n\n")
         : parsed.SQ_version || "";
 
-    // save to DB if you want
     await sql`
       INSERT INTO creations (user_id, prompt, content, type)
       VALUES (${userId}, ${topic}, ${JSON.stringify(parsed)}, 'exam-generator')
@@ -1030,12 +1215,21 @@ Return ONLY JSON in this format:
   }
 };
 
-
+//Caption generator
 export const imageCaption = async (req, res) => {
   try {
-    const userId = req.auth?.userId;
+    const { userId } = req.auth();
     if (!userId) {
       return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
+    // ⭐ PREMIUM CHECK
+    const plan = req.plan;
+    if (plan !== "premium") {
+      return res.json({
+        success: false,
+        message: "This feature is only available for premium subscriptions",
+      });
     }
 
     if (!req.file) {
@@ -1079,17 +1273,17 @@ export const imageCaption = async (req, res) => {
         }
       ]
     };
-let descRes = await axios.post(
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
-  visionPrompt,
-  {
-    headers: {
-      "Content-Type": "application/json",
-      "x-goog-api-key": process.env.GEMINI_API_KEY
-    }
-  }
-);
 
+    let descRes = await axios.post(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+      visionPrompt,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": process.env.GEMINI_API_KEY
+        }
+      }
+    );
 
     const description =
       descRes.data?.candidates?.[0]?.content?.parts?.[0]?.text ||
@@ -1116,7 +1310,7 @@ Return STRICT JSON:
  "Gen-Z": "caption here",
  ...
 }
-    `;
+`;
 
     const capBody = {
       contents: [
@@ -1125,7 +1319,7 @@ Return STRICT JSON:
     };
 
     let capRes = await axios.post(
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
       capBody,
       {
         headers: {
@@ -1158,3 +1352,387 @@ Return STRICT JSON:
     return res.json({ success: false, message: err.message });
   }
 };
+
+
+// Mock Interview
+export const interviewSimulator = async (req, res) => {
+  try {
+    const { userId } = req.auth();
+    const { role, difficulty, answer } = req.body;
+
+    if (!userId)
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+
+    // ⭐ PREMIUM CHECK
+    const plan = req.plan;
+    if (plan !== "premium") {
+      return res.json({
+        success: false,
+        message: "This feature is only available for premium subscriptions",
+      });
+    }
+
+    // First question — no answer yet
+    if (!answer) {
+      const prompt = `
+You are an AI Interviewer.
+Conduct a mock interview.
+
+Job Role: ${role}
+Difficulty: ${difficulty}
+
+Give:
+1. One strong interview question
+2. Why you asked it
+3. How candidate should ideally answer  
+Keep it short.
+`;
+
+      const response = await axios.post(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+        {
+          contents: [{ parts: [{ text: prompt }] }],
+        },
+        {
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": process.env.GEMINI_API_KEY,
+          },
+        }
+      );
+
+      const question =
+        response.data?.candidates?.[0]?.content?.parts?.[0]?.text ||
+        "No question generated";
+
+      return res.json({ success: true, type: "question", message: question });
+    }
+
+    // If user answered → evaluate answer
+    const feedbackPrompt = `
+You are an AI interviewer.  
+Here is the candidate's answer — evaluate it.
+
+Role: ${role}
+Difficulty: ${difficulty}
+
+Candidate Answer:
+${answer}
+
+Give:
+• Feedback (short)
+• What was good  
+• What was weak  
+• Score out of 10  
+• Ask ONE follow-up question  
+Keep it short.
+`;
+
+    const feedbackRes = await axios.post(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+      {
+        contents: [{ parts: [{ text: feedbackPrompt }] }],
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": process.env.GEMINI_API_KEY,
+        },
+      }
+    );
+
+    const feedback =
+      feedbackRes.data?.candidates?.[0]?.content?.parts?.[0]?.text ||
+      "No feedback generated";
+
+    return res.json({ success: true, type: "feedback", message: feedback });
+
+  } catch (err) {
+    console.error("INTERVIEW ERROR:", err);
+    return res.json({ success: false, message: err.message });
+  }
+};
+
+
+//ppt generator
+// ---------- PPT / PRESENTATION GENERATOR ----------
+export const generatePresentation = async (req, res) => {
+  try {
+    const { userId } = req.auth();
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+      });
+    }
+
+    // ⭐ PREMIUM CHECK
+    const plan = req.plan;
+    if (plan !== "premium") {
+      return res.json({
+        success: false,
+        message: "This feature is only available for premium subscriptions",
+      });
+    }
+
+    const { topic, slideCount = 8, detail = "normal" } = req.body;
+
+    if (!topic?.trim()) {
+      return res.json({
+        success: false,
+        message: "Topic is required",
+      });
+    }
+
+    const slidesNum = Math.max(3, Math.min(20, parseInt(slideCount) || 8));
+
+    const detailText =
+      detail === "short"
+        ? "very concise bullet points, 3–4 bullets per slide"
+        : detail === "detailed"
+        ? "detailed bullet points, 5–7 bullets per slide"
+        : "clear bullet points, 4–5 bullets per slide";
+
+    const prompt = `
+You are a senior presentation designer and subject expert.
+
+Create a slide deck outline for the topic:
+"${topic}"
+
+- Number of slides: ${slidesNum}
+- Style: corporate, clean, easy to scan
+- For each slide, include:
+  - "title": short slide title
+  - "bullets": array of bullet points (no more than 2 lines each)
+Return ONLY valid JSON.
+
+Details: ${detailText}
+`;
+
+    const response = await axios.post(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+      {
+        contents: [{ parts: [{ text: prompt }] }],
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": process.env.GEMINI_API_KEY,
+        },
+      }
+    );
+
+    const raw = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!raw) {
+      return res.json({
+        success: false,
+        message: "AI did not return a response",
+      });
+    }
+
+    const start = raw.indexOf("{");
+    const end = raw.lastIndexOf("}") + 1;
+    const jsonString = raw.slice(start, end);
+
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonString);
+    } catch (err) {
+      console.error("PPT JSON Parse Error:", jsonString);
+      return res.json({
+        success: false,
+        message: "Failed to parse AI response",
+      });
+    }
+
+    const slides = Array.isArray(parsed.slides) ? parsed.slides : [];
+
+    const safeSlides = slides.map((s, idx) => ({
+      title: String(s.title || `Slide ${idx + 1}`),
+      bullets: Array.isArray(s.bullets)
+        ? s.bullets.map((b) => String(b))
+        : [],
+    }));
+
+    await sql`
+      INSERT INTO creations (user_id, prompt, content, type)
+      VALUES (${userId}, ${topic}, ${JSON.stringify({ slides: safeSlides })}, 'ppt-generator')
+    `;
+
+    return res.json({
+      success: true,
+      slides: safeSlides,
+    });
+  } catch (err) {
+    console.error("PPT generator error:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to generate presentation",
+    });
+  }
+};
+
+// ---------- AI RESUME BUILDER ----------
+// ---------- AI RESUME GENERATOR ----------
+export const generateResume = async (req, res) => {
+  try {
+    const { userId } = req.auth();
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+      });
+    }
+
+    const {
+      fullName,
+      jobTitle,
+      email,
+      phone,
+      location,
+      experienceLevel,
+      experienceYears,
+      skills,
+      techStack,
+      projects,
+      education,
+      extras,
+    } = req.body;
+
+    if (!fullName || !jobTitle || !email) {
+      return res.json({
+        success: false,
+        message: "Name, job title & email are required",
+      });
+    }
+
+    const prompt = `
+You are a top 1% resume writer. Create a **one-page, ATS-friendly resume** for this user.
+
+User Info:
+- Full Name: ${fullName}
+- Target Role / Headline: ${jobTitle}
+- Email: ${email}
+- Phone: ${phone || "N/A"}
+- Location: ${location || "N/A"}
+- Experience level: ${experienceLevel || "Not specified"}
+- Years of experience: ${experienceYears || "N/A"}
+- Skills: ${skills || "N/A"}
+- Tech stack: ${techStack || "N/A"}
+- Projects: ${projects || "N/A"}
+- Education: ${education || "N/A"}
+- Extra details (certifications, achievements, links): ${extras || "N/A"}
+
+Rules:
+- Keep it **one page** worth of content.
+- Use **bullet points** with strong action verbs.
+- Make it **ATS-friendly** (no tables, no columns).
+- Use clear section headings: SUMMARY, SKILLS, EXPERIENCE, PROJECTS, EDUCATION, EXTRA.
+
+Return STRICT JSON only in this shape:
+
+{
+  "markdown": "### full resume in markdown here...",
+  "sections": {
+    "summary": "short professional summary...",
+    "skills": {
+      "primary": ["Skill 1", "Skill 2"],
+      "secondary": ["Skill 3", "Skill 4"]
+    },
+    "experience": [
+      {
+        "role": "Job Title",
+        "company": "Company Name",
+        "location": "City, Country",
+        "start": "Jan 2022",
+        "end": "Present",
+        "points": [
+          "Bullet point 1",
+          "Bullet point 2"
+        ]
+      }
+    ],
+    "projects": [
+      {
+        "name": "Project Name",
+        "tech": ["React", "Node.js"],
+        "link": "https://...",
+        "points": [
+          "What you built / impact",
+          "What stack / results"
+        ]
+      }
+    ],
+    "education": [
+      {
+        "degree": "BCA",
+        "school": "College Name",
+        "year": "2025",
+        "extra": "CGPA / Highlights"
+      }
+    ],
+    "extras": [
+      "Certifications, hackathons, achievements..."
+    ]
+  }
+}
+`;
+
+    // use your existing Gemini helper if you have it
+    const raw = await callGemini(prompt, 1800, 0.5); // uses GEMINI_KEY etc
+
+    if (!raw) {
+      return res.json({
+        success: false,
+        message: "AI did not return a response",
+      });
+    }
+
+    const start = raw.indexOf("{");
+    const end = raw.lastIndexOf("}") + 1;
+    if (start === -1 || end === 0) {
+      console.log("RAW RESUME RESPONSE:", raw);
+      return res.json({
+        success: false,
+        message: "Failed to parse AI response",
+      });
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(raw.slice(start, end));
+    } catch (err) {
+      console.log("RESUME JSON PARSE ERROR:", raw);
+      return res.json({
+        success: false,
+        message: "Failed to parse AI JSON",
+      });
+    }
+
+    const markdown = parsed.markdown || "";
+    const sections = parsed.sections || null;
+
+    // optional: save in DB
+    try {
+      await sql`
+        INSERT INTO creations (user_id, prompt, content, type)
+        VALUES (${userId}, ${jobTitle}, ${JSON.stringify(parsed)}, 'ai-resume')
+      `;
+    } catch (dbErr) {
+      console.warn("Failed to save resume:", dbErr.message || dbErr);
+    }
+
+    return res.json({
+      success: true,
+      markdown,
+      sections,
+    });
+  } catch (err) {
+    console.error("RESUME GENERATOR ERROR:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to generate resume",
+    });
+  }
+};
+
